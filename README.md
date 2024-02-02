@@ -21,9 +21,14 @@ For those new to Renify, consider using the following code for interactive mode:
 renify -i <File or Folder Path>
 ```
 
-or you can use:
+Or you can use:
 ```bash
 renify -i <File or Folder Path> --target file --method znum --nbits 5 --recursive false --start 1 -y
+```
+
+You can revert to the previous state of the modifications by using:
+```bash
+renify -i . --roll
 ```
 
 You can get help from:
