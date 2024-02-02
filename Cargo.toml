@@ -2,7 +2,7 @@
 name = "renify"
 version = "0.0.5"
 edition = "2021"
-description = "A batch renaming tool for files and folders, written in Rust."
+description = "A simple cli tool for batch renaming files and folders, written in Rust."
 repository = "https://github.com/jamjamjon/renify"
 authors = ["Jamjamjon <jamjamjon.usls@gmail.com>"]
 license = "MIT"
