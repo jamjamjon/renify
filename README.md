@@ -1,4 +1,4 @@
-# Renify 
+# Renify
 A simple cli tool for batch renaming files and folders, written in Rust.
 - [x] support files
 - [x] support folders
@@ -6,7 +6,7 @@ A simple cli tool for batch renaming files and folders, written in Rust.
 
 
 
-![Example GIF](assets/demo.gif)
+![Example GIF](https://github.com/jamjamjon/assets/releases/download/usls/renify-demo.gif)
 
 
 # Installation
@@ -50,6 +50,3 @@ renify --help
 
 # Note that
 Renify will set `--indiscriminate false` to make sure that the file stems stay consistent. This means that if you have files with the same stems in the same folder, they'll still look the same even after you rename them. Certainly, you can use `--indiscriminate` to treat each file as an independent entity without considering its relationship with other files.
-
-          
-
