@@ -10,8 +10,10 @@ A simple cli tool for batch renaming files and folders, written in Rust.
 
 
 # Installation
+You can install with `pip` or `cargo`
 ```
 cargo install renify
+pip install renify
 ```
 
 # Usage

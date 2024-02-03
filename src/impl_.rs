@@ -11,8 +11,7 @@ use walkdir::{DirEntry, WalkDir};
 use crate::{Cli, Method, Target};
 
 const STR_NOT_ALLOWED: &str = "<>:/\"|?*'`"; // TODO
-const HELLO: &str =
-    "👋 Welcome to Renify. A simple and secure batch renaming tool for files and folders, written in Rust.\n";
+const HELLO: &str = "👋 Welcome to Renify\n";
 
 impl Cli {
     pub fn run(&mut self) -> Result<()> {
