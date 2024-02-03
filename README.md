@@ -6,8 +6,7 @@ A simple cli tool for batch renaming files and folders, written in Rust.
 
 
 
-![Example GIF](https://github.com/jamjamjon/assets/releases/download/usls/renify-demo.gif)
-
+![Example GIF](assets/demo.gif)
 
 # Installation
 You can install with `pip` or `cargo`
