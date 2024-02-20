@@ -4,7 +4,9 @@ A simple cli tool for batch renaming files and folders, written in Rust.
 - [x] support folders
 - [ ] **symlinks are not supported!**
 
-
+new new new new new new new new new new
+new new new new new new new new new new
+new new new new new new new new new new
 
 ![Example GIF](assets/demo.gif)
 
