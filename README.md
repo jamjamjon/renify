@@ -15,6 +15,8 @@ A simple cli tool for batch renaming files and folders, written in Rust.
 # Installation
 ```
 pip install renify
+# or
+cargo install renify
 ```
 
 # Usage
