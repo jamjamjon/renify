@@ -1,7 +1,6 @@
-use anyhow::Result;
 use clap::Parser;
 
-fn main() -> Result<()> {
+fn main() -> anyhow::Result<()> {
     renify::Cli::parse().run()?;
     Ok(())
 }

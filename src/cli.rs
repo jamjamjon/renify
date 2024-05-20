@@ -1,15 +1,18 @@
-use crate::{Method, Target};
+use crate::{Method, Target, Task};
 
 #[derive(clap::Parser, Debug)]
 #[command(author, version, about, long_about = None)]
 pub struct Cli {
     /// Source: File & directory
-    #[arg(short, long, required = true, value_name("Source"))]
     pub input: String,
 
     /// Target: File & directory
     #[arg(short, long, value_enum, value_name("Target"))]
     pub target: Option<Target>,
+
+    /// Tasks: rename & undo with history
+    #[arg(short, long, value_enum)]
+    pub task: Option<Task>,
 
     /// Methods for renaming
     #[arg(short, long, value_enum)]
@@ -49,12 +52,4 @@ pub struct Cli {
     /// Execute without asking
     #[arg(short, long)]
     pub yes: bool,
-
-    /// Roll back
-    #[arg(long)]
-    pub roll: bool,
-
-    /// Cache file
-    #[arg(long, default_value_t = String::from(".renify_cache"))]
-    pub cache: String,
 }

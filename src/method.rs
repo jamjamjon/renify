@@ -1,4 +1,4 @@
-#[derive(Debug, Clone, clap::ValueEnum, Copy)]
+#[derive(Debug, Clone, clap::ValueEnum)]
 pub enum Method {
     /// => 9AFoh, wGRLC, knj9y, ... (--nbits => 5)
     Random,
@@ -14,16 +14,13 @@ pub enum Method {
     Prefix,
     /// => X.jpg --> X<Delimiter><Append>.jpg
     Append,
-    /// TODO: OS problem. aBcDe123.txt --> ABCDE123.txt.
-    Uppercase,
-    /// TODO: OS problem. aBcDe123.txt --> abcde123.txt.
-    Lowercase,
-    // /// TODO
+    // TODO: OS problem, unsafe
+    // windows: unsupported ,NTFS
+    // Linux: supported, ext4
+    // maxos: unsupported, APFS
+    // Uppercase,
+    // Lowercase,
     // Capitalized,
-    // /// TODO
-    // Snake,
-    // /// TODO
-    // Replace,
 }
 
 impl From<&str> for Method {
@@ -33,11 +30,11 @@ impl From<&str> for Method {
             "Uuid" => Self::Uuid,
             "Time" => Self::Time,
             "Numbered" => Self::Num,
-            "Zero-Numbered" => Self::Znum,
+            "ZeroNumbered" => Self::Znum,
             "Prefix" => Self::Prefix,
             "Append" => Self::Append,
-            "Uppercase" => Self::Uppercase,
-            "Lowercase" => Self::Lowercase,
+            // "Uppercase" => Self::Uppercase,
+            // "Lowercase" => Self::Lowercase,
             _ => todo!(),
         }
     }

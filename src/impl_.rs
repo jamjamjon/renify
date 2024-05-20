@@ -1,6 +1,5 @@
 use anyhow::Result;
 use dialoguer::theme::ColorfulTheme;
-use indicatif::{ProgressBar, ProgressState, ProgressStyle};
 use rand::{distributions::Alphanumeric, thread_rng, Rng};
 use std::collections::{BTreeMap, HashMap};
 use std::io::Write;
@@ -8,45 +7,23 @@ use std::path::{Path, PathBuf};
 use uuid::Uuid;
 use walkdir::{DirEntry, WalkDir};
 
-use crate::{Cli, Method, Target};
-
-const STR_NOT_ALLOWED: &str = "<>:/\"|?*'`"; // TODO
-const HELLO: &str = "👋 Welcome to Renify\n";
+use crate::{
+    build_progressbar, Cli, Method, Target, Task, BIT_MAX, CHECK_MARK, CROSS_MARK, INVALID_CHARS,
+};
 
 impl Cli {
     pub fn run(&mut self) -> Result<()> {
-        println!("{}", console::Style::new().white().bright().apply_to(HELLO));
-
         let theme = Self::build_theme();
-        let s = if self.roll {
-            self.roll_back()?;
-            "You have successfully reverted to the previous state!"
-        } else {
-            self.rename(&theme)?;
-            "Done!"
-        };
-        println!(
-            "\n\n{}{}",
-            console::Emoji("👏 ", ""),
-            console::Style::new().white().bright().apply_to(s)
-        );
-        println!(
-            "{}{} {} {}",
-            console::Emoji("✨ ", ""),
-            console::Style::new()
-                .white()
-                .bright()
-                .apply_to("Note that you can always use"),
-            console::Style::new()
-                .color256(49)
-                .bright()
-                .apply_to("`renify -i . --roll`"),
-            console::Style::new()
-                .white()
-                .bright()
-                .apply_to("to revert to the previous state of the modifications."),
-        );
 
+        // Task
+        self.ask_task(&theme)?;
+        match &self.task {
+            None => anyhow::bail!("{CROSS_MARK} No task specified"),
+            Some(task) => match task {
+                Task::Rename => self.rename(&theme)?,
+                Task::Undo => self.undo(&theme)?,
+            },
+        }
         Ok(())
     }
 
@@ -56,13 +33,25 @@ impl Cli {
         self.ask_target(source_type, theme)?;
         let ys = self.fetch_targets(&self.input)?;
 
+        // cache
+        let mut dir_cache = match std::env::current_dir() {
+            Err(err) => anyhow::bail!("Cache folder get current_dir: {err}."),
+            Ok(mut d) => {
+                d.push(".renify-cache");
+                if !d.exists() {
+                    std::fs::create_dir_all(&d).expect("Cache folder failed to create: {err}.");
+                }
+                d
+            }
+        };
+
         // continue?
         if ys.is_empty() {
             self.status_log(
                 false,
                 "Found",
                 &format!("{:?} x0", self.target.unwrap()),
-                "No targets found",
+                "Not Found",
             );
         } else {
             let ntotal = ys
@@ -75,23 +64,26 @@ impl Cli {
                 "",
             );
 
-            // check method
+            // Method
             self.ask_method(theme)?;
 
-            // question asking according to different methods
-            match self.method.unwrap() {
-                Method::Random => self.ask_nbit(theme, ntotal)?,
-                Method::Znum => {
-                    self.ask_start_from(theme)?;
-                    self.ask_nbit(theme, ntotal + self.start.unwrap())?;
-                }
-                Method::Num => self.ask_start_from(theme)?,
-                Method::Time => self.ask_delimiter(theme)?,
-                Method::Prefix | Method::Append => {
-                    self.ask_delimiter(theme)?;
-                    self.ask_with(theme)?;
-                }
-                _ => {}
+            // Question asking
+            match &self.method {
+                None => anyhow::bail!("{CROSS_MARK} No task specified"),
+                Some(method) => match method {
+                    Method::Random => self.ask_nbit(theme, ntotal)?,
+                    Method::Znum => {
+                        self.ask_start_from(theme)?;
+                        self.ask_nbit(theme, ntotal + self.start.unwrap())?;
+                    }
+                    Method::Num => self.ask_start_from(theme)?,
+                    Method::Time => self.ask_delimiter(theme)?,
+                    Method::Prefix | Method::Append => {
+                        self.ask_delimiter(theme)?;
+                        self.ask_with(theme)?;
+                    }
+                    _ => {}
+                },
             }
 
             if !self.yes
@@ -104,22 +96,25 @@ impl Cli {
             {
                 self.status_log(false, "Task cancelled.", "", "");
             }
-            let pb = self.build_progressbar(ntotal as u64, " Renaming".to_string());
+            let pb = build_progressbar(ntotal as u64, " Renaming");
             let mut map_pf_stem = HashMap::<PathBuf, String>::new();
             let mut map_pd_cnt: HashMap<PathBuf, usize> = HashMap::new();
+
+            // cache file
+            dir_cache.push(chrono::Local::now().format("%Y%m%d%H%M%S%f").to_string());
             let mut f_cache = std::fs::OpenOptions::new()
                 .read(true)
                 .write(true)
                 .create(true)
                 .truncate(true)
-                .open(&self.cache)?;
+                .open(dir_cache)?;
 
             // loop
             for (_, paths) in ys.iter().rev() {
                 for (pd, pfs) in paths.iter() {
                     for pf in pfs.iter() {
                         pb.inc(1);
-                        let path_new = self.gen_uniq(pf, pd, &mut map_pd_cnt, &mut map_pf_stem);
+                        let path_new = self.gen_uniq(pf, pd, &mut map_pd_cnt, &mut map_pf_stem)?;
                         self.rename_and_cache(pf, &path_new, &mut f_cache)?;
                     }
                 }
@@ -129,30 +124,94 @@ impl Cli {
         Ok(())
     }
 
-    pub fn roll_back(&self) -> Result<()> {
-        if !std::path::Path::new(&self.cache).exists() {
-            self.status_log(
-                false,
-                "Execution cache",
-                "Not Found",
-                "Please run renify beforehand",
-            );
-        }
-        let contents = std::fs::read_to_string(&self.cache)?;
-        let pb =
-            self.build_progressbar(contents.lines().count() as u64, " Rolling Back".to_string());
-        let mut f_cache = std::fs::OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .open(&self.cache)?;
-        for line in contents.lines().rev() {
-            pb.inc(1);
-            let v: Vec<&str> = line.split(' ').collect();
-            self.rename_and_cache(v[1], v[0], &mut f_cache)?;
-        }
-        pb.finish();
+    fn undo(&self, theme: &ColorfulTheme) -> Result<()> {
+        match std::env::current_dir() {
+            Err(err) => anyhow::bail!("Cache folder get current_dir: {err}."),
+            Ok(mut d) => {
+                d.push(".renify-cache");
+                if !d.exists() {
+                    self.status_log(
+                        false,
+                        "Failed to undo",
+                        "No caches found",
+                        "Please run renify beforehand",
+                    );
+                } else {
+                    // glob
+                    let mut ys = Vec::new();
+                    for entry in d.read_dir().expect("read_dir call failed").flatten() {
+                        ys.push(entry.path().to_str().unwrap().to_string());
+                    }
+
+                    if ys.is_empty() {
+                        self.status_log(
+                            false,
+                            "Failed to undo",
+                            "No caches found",
+                            "Please run renify beforehand",
+                        );
+                    }
+
+                    // sort
+                    ys.sort_by(|a, b| {
+                        std::fs::metadata(a)
+                            .unwrap()
+                            .modified()
+                            .unwrap()
+                            .partial_cmp(&std::fs::metadata(b).unwrap().modified().unwrap())
+                            .unwrap()
+                            .reverse()
+                    });
+
+                    // asking
+                    let i = dialoguer::Select::with_theme(theme)
+                        .with_prompt("Cache")
+                        .default(0)
+                        .items(&ys[..])
+                        .interact()?;
+
+                    // undo
+                    let yys: Vec<_> = ys.drain(i + 1..).collect();
+                    for y in ys.iter() {
+                        let contents = match std::fs::read_to_string(y) {
+                            Ok(s) => s,
+                            Err(err) => {
+                                anyhow::bail!("Error when read_to_string: {err}")
+                            }
+                        };
+                        let pb = build_progressbar(contents.lines().count() as u64, " Undoing");
+                        for line in contents.lines().rev() {
+                            pb.inc(1);
+                            let v: Vec<&str> = line.split(' ').collect();
+                            match std::fs::rename(v[1], v[0]) {
+                                Ok(_) => {}
+                                Err(err) => {
+                                    anyhow::bail!("Error when renaming: {err}")
+                                }
+                            };
+                        }
+                        match std::fs::remove_file(y) {
+                            Ok(_) => {}
+                            Err(err) => {
+                                anyhow::bail!("Error when removing file: {err}")
+                            }
+                        }
+                        pb.finish();
+                    }
+
+                    // cleanup
+                    if yys.is_empty() {
+                        match std::fs::remove_dir(d) {
+                            Ok(_) => {}
+                            Err(err) => {
+                                anyhow::bail!("Error when removing directory: {err}")
+                            }
+                        }
+                    }
+                }
+            }
+        };
+
         Ok(())
     }
 
@@ -276,8 +335,8 @@ impl Cli {
         pd: &Path,
         map_pd_cnt: &mut HashMap<PathBuf, usize>,
         map_pf_stem: &mut HashMap<PathBuf, String>,
-    ) -> PathBuf {
-        // generate unique file stem
+    ) -> Result<PathBuf> {
+        // Generate unique file stem
         if !self.indiscriminate {
             if let Target::File = self.target.unwrap() {
                 let path_wo_ext = pf.with_extension("");
@@ -287,76 +346,82 @@ impl Cli {
                     if let Some(suffix) = pf.extension() {
                         path_new = path_new.with_extension(suffix);
                     }
-                    return path_new;
+                    return Ok(path_new);
                 }
             }
         }
 
         loop {
-            let stem = match self.method.unwrap() {
-                Method::Time => chrono::Local::now()
-                    .format(&format!(
-                        "%Y{}%m{}%d{}%H{}%M{}%S{}%f",
-                        self.delimiter.as_ref().unwrap(),
-                        self.delimiter.as_ref().unwrap(),
-                        self.delimiter.as_ref().unwrap(),
-                        self.delimiter.as_ref().unwrap(),
-                        self.delimiter.as_ref().unwrap(),
-                        self.delimiter.as_ref().unwrap()
-                    ))
-                    .to_string(),
-                Method::Uuid => Uuid::new_v4().to_string(),
-                Method::Prefix => {
-                    assert!(
+            let stem = match &self.method {
+                None => anyhow::bail!("{CROSS_MARK} No task specified"),
+                Some(method) => match method {
+                    Method::Time => chrono::Local::now()
+                        .format(&format!(
+                            "%Y{}%m{}%d{}%H{}%M{}%S{}%f",
+                            self.delimiter.as_ref().unwrap(),
+                            self.delimiter.as_ref().unwrap(),
+                            self.delimiter.as_ref().unwrap(),
+                            self.delimiter.as_ref().unwrap(),
+                            self.delimiter.as_ref().unwrap(),
+                            self.delimiter.as_ref().unwrap()
+                        ))
+                        .to_string(),
+                    Method::Uuid => Uuid::new_v4().to_string(),
+                    Method::Prefix => {
+                        assert!(
                             self.with.is_some(),
                             "> You should set the prefix content by `--with` when using `Method::Prefix`."
                         );
-                    let stem = pf.file_stem().unwrap().to_str().unwrap();
-                    format!(
-                        "{}{}{}",
-                        self.with.clone().unwrap(),
-                        self.delimiter.as_ref().unwrap(),
-                        stem
-                    )
-                }
-                Method::Append => {
-                    assert!(
+                        let stem = pf.file_stem().unwrap().to_str().unwrap();
+                        format!(
+                            "{}{}{}",
+                            self.with.clone().unwrap(),
+                            self.delimiter.as_ref().unwrap(),
+                            stem
+                        )
+                    }
+                    Method::Append => {
+                        assert!(
                             self.with.is_some(),
                             "> You should set the postfix content by `--with` when using `Method::Append`."
                         );
-                    let stem = pf.file_stem().unwrap().to_str().unwrap();
-                    format!(
-                        "{}{}{}",
-                        stem,
-                        self.delimiter.as_ref().unwrap(),
-                        self.with.clone().unwrap()
-                    )
-                }
-                Method::Num | Method::Znum => {
-                    let count = map_pd_cnt
-                        .entry(pd.to_path_buf())
-                        .or_insert(self.start.unwrap() - 1);
-                    *count += 1;
-                    if let Method::Znum = self.method.unwrap() {
-                        format!("{:0>1$}", count, self.nbits.unwrap())
-                    } else {
+                        let stem = pf.file_stem().unwrap().to_str().unwrap();
+                        format!(
+                            "{}{}{}",
+                            stem,
+                            self.delimiter.as_ref().unwrap(),
+                            self.with.clone().unwrap()
+                        )
+                    }
+                    Method::Num => {
+                        let count = map_pd_cnt
+                            .entry(pd.to_path_buf())
+                            .or_insert(self.start.unwrap() - 1);
+                        *count += 1;
                         count.to_string()
                     }
-                }
-                Method::Random => thread_rng()
-                    .sample_iter(&Alphanumeric)
-                    .take(self.nbits.unwrap())
-                    .map(char::from)
-                    .collect(),
-                // Method::Lowercase => {
-                //     let stem = pf.file_stem().unwrap().to_str().unwrap().to_lowercase();
-                //     stem
-                // }
-                // Method::Uppercase => {
-                //     let stem = pf.file_stem().unwrap().to_str().unwrap().to_uppercase();
-                //     stem
-                // }
-                _ => todo!(),
+                    Method::Znum => {
+                        let count = map_pd_cnt
+                            .entry(pd.to_path_buf())
+                            .or_insert(self.start.unwrap() - 1);
+                        *count += 1;
+                        format!("{:0>1$}", count, self.nbits.unwrap())
+                    }
+                    Method::Random => thread_rng()
+                        .sample_iter(&Alphanumeric)
+                        .take(self.nbits.unwrap())
+                        .map(char::from)
+                        .collect(),
+                    // Method::Lowercase => {
+                    //     let stem = pf.file_stem().unwrap().to_str().unwrap().to_lowercase();
+                    //     stem
+                    // }
+                    // Method::Uppercase => {
+                    //     let stem = pf.file_stem().unwrap().to_str().unwrap().to_uppercase();
+                    //     stem
+                    // }
+                    // _ => todo!(),
+                },
             };
 
             // check if new stem file exists
@@ -377,14 +442,17 @@ impl Cli {
             }
 
             if !p_new.exists() {
-                break p_new;
+                break Ok(p_new);
             } else {
-                match self.method.unwrap() {
-                    // Method::Uppercase | Method::Lowercase | Method::Num | Method::Znum => {
-                    Method::Num | Method::Znum => {
-                        break pf.to_path_buf();
-                    }
-                    _ => {}
+                match &self.method {
+                    None => anyhow::bail!("{CROSS_MARK} No task specified"),
+                    Some(method) => match method {
+                        // Method::Uppercase | Method::Lowercase | Method::Num | Method::Znum => {
+                        Method::Num | Method::Znum => {
+                            break Ok(pf.to_path_buf());
+                        }
+                        _ => {}
+                    },
                 }
             }
         }
@@ -442,7 +510,7 @@ impl Cli {
                     .bold()
                     .color256(49)
                     .bright()
-                    .apply_to("✔  ")
+                    .apply_to(format!("{}  ", CHECK_MARK))
             );
         } else {
             print!(
@@ -451,7 +519,7 @@ impl Cli {
                     .bold()
                     .color256(9)
                     .bright()
-                    .apply_to("✘  ")
+                    .apply_to(format!("{}  ", CROSS_MARK))
             );
         }
 
@@ -511,12 +579,41 @@ impl Cli {
                 Target::Symlink => &self.input,
             },
             match type_ {
-                Target::Dir => "A Folder",
-                Target::File => "A File",
-                Target::Symlink => "A Symlink",
+                Target::Dir => "Folders",
+                Target::File => "Files",
+                Target::Symlink => "Symlinks",
             },
         );
         Ok(type_)
+    }
+
+    fn ask_task(&mut self, theme: &ColorfulTheme) -> Result<()> {
+        match &self.task {
+            None => {
+                let selections = &["Rename", "Undo with history"];
+                let i = dialoguer::Select::with_theme(theme)
+                    .with_prompt("Task")
+                    .default(0)
+                    .items(&selections[..])
+                    .interact()?;
+                self.task = Some(Task::from(selections[i]));
+            }
+            Some(task) => {
+                self.status_log(
+                    true,
+                    "Task",
+                    &format!("{:?}", task),
+                    &format!(
+                        "--task {}",
+                        match task {
+                            Task::Rename => "Rename",
+                            Task::Undo => "Undo",
+                        }
+                    ),
+                );
+            }
+        }
+        Ok(())
     }
 
     fn ask_target(&mut self, source_type: Target, theme: &ColorfulTheme) -> Result<()> {
@@ -576,24 +673,22 @@ impl Cli {
     }
 
     fn ask_method(&mut self, theme: &ColorfulTheme) -> Result<()> {
-        match self.method {
+        match &self.method {
             None => {
                 let selections = &[
                     "Random",
                     "Uuid",
                     "Time",
                     "Numbered",
-                    "Zero-Numbered",
+                    "ZeroNumbered",
                     "Prefix",
                     "Append",
-                    // "Lowercase",
-                    // "Uppercase",
                 ];
                 let i = dialoguer::Select::with_theme(theme)
-                    .with_prompt("Select method")
+                    .with_prompt("Method")
                     .default(0)
-                    .max_length(10)
-                    .items(&selections[..])
+                    // .max_length(10)
+                    .items(selections)
                     .interact()?;
                 self.method = Some(Method::from(selections[i]));
             }
@@ -612,7 +707,6 @@ impl Cli {
                             Method::Prefix => "prefix",
                             Method::Append => "append",
                             Method::Uuid => "uuid",
-                            _ => "",
                         }
                     ),
                 );
@@ -701,13 +795,15 @@ impl Cli {
 
     fn ask_nbit(&mut self, theme: &ColorfulTheme, ntotal: usize) -> Result<()> {
         //  calculate the bit_min
-        let n_min = match self.method.unwrap() {
-            Method::Znum => ntotal.to_string().len(),
-            Method::Random => Self::decimal_to_62(ntotal).len(),
-            _ => 0,
+        let n_min = match &self.method {
+            None => anyhow::bail!("{CROSS_MARK} No task specified"),
+            Some(method) => match method {
+                Method::Znum => ntotal.to_string().len(),
+                Method::Random => Self::decimal_to_62(ntotal).len(),
+                _ => 0,
+            },
         };
-        let n_max = n_min + 5;
-        let err_msg = format!("It should be between {} to {}.", n_min, n_max);
+        let err_msg = format!("It should be between {} to {}.", n_min, BIT_MAX);
         match self.nbits {
             None => {
                 self.nbits = Some(
@@ -717,7 +813,7 @@ impl Cli {
                         .validate_with(|input: &String| -> Result<(), &str> {
                             match input.parse::<usize>() {
                                 Ok(n) => {
-                                    if !(n_min..=n_max).contains(&n) {
+                                    if !(n_min..=BIT_MAX).contains(&n) {
                                         Err(&err_msg)
                                     } else {
                                         Ok(())
@@ -733,7 +829,7 @@ impl Cli {
             }
             Some(n) => {
                 // validate
-                if !(n_min..=n_max).contains(&n) {
+                if !(n_min..=BIT_MAX).contains(&n) {
                     self.status_log(false, "The number of bits", &n.to_string(), &err_msg);
                 }
                 self.status_log(
@@ -749,20 +845,17 @@ impl Cli {
     }
 
     fn ask_depth(&mut self, theme: &ColorfulTheme) -> Result<()> {
-        let depth_max = self.max_depth(&self.input);
+        let max_ = self.max_depth(&self.input);
         match self.depth {
             None => {
                 let depth = dialoguer::Input::with_theme(theme)
-                    .with_prompt(format!(
-                        "The depth of folder (max: {}, 0: to the end)",
-                        depth_max
-                    ))
-                    .with_initial_text("0".to_string())
+                    .with_prompt("Depth")
+                    .with_initial_text(max_.to_string())
                     .validate_with(|input: &String| -> Result<(), &str> {
                         match input.parse::<usize>() {
                             Ok(n) => {
-                                if !(0..=depth_max).contains(&n) {
-                                    Err("It should be between 0 to max depth found.")
+                                if !(0..=max_).contains(&n) {
+                                    Err("It should be between 0 and `max_depth` given.")
                                 } else {
                                     Ok(())
                                 }
@@ -789,8 +882,8 @@ impl Cli {
 
     fn ask_delimiter(&mut self, theme: &ColorfulTheme) -> Result<()> {
         let err_msg = format!(
-            "Wrong char! These are usually not allowed: {}",
-            STR_NOT_ALLOWED
+            "Illegal characters! These are usually not allowed: {}",
+            INVALID_CHARS
         );
         match &self.delimiter {
             None => {
@@ -800,7 +893,7 @@ impl Cli {
                         .with_initial_text("-".to_string())
                         .validate_with({
                             |input: &String| -> Result<(), &str> {
-                                if input.as_str().chars().any(|c| STR_NOT_ALLOWED.contains(c)) {
+                                if input.as_str().chars().any(|c| INVALID_CHARS.contains(c)) {
                                     Err(&err_msg)
                                 } else {
                                     Ok(())
@@ -826,8 +919,8 @@ impl Cli {
 
     fn ask_with(&mut self, theme: &ColorfulTheme) -> Result<()> {
         let err_msg = format!(
-            "Wrong char! These are usually not allowed: {}",
-            STR_NOT_ALLOWED
+            "Illegal characters! These are usually not allowed: {}",
+            INVALID_CHARS
         );
         match &self.with {
             None => {
@@ -836,7 +929,7 @@ impl Cli {
                         .with_prompt("What text with")
                         .validate_with({
                             |input: &String| -> Result<(), &str> {
-                                if input.as_str().chars().any(|c| STR_NOT_ALLOWED.contains(c)) {
+                                if input.as_str().chars().any(|c| INVALID_CHARS.contains(c)) {
                                     Err(&err_msg)
                                 } else {
                                     Ok(())
@@ -865,13 +958,13 @@ impl Cli {
             prompt_prefix: console::Style::new()
                 .bold()
                 .color256(9)
-                .apply_to("? ".to_string()),
+                .apply_to("❓ ".to_string()),
             prompt_suffix: console::Style::new().white().dim().apply_to("› ".into()),
             success_prefix: console::Style::new()
                 .bold()
                 .color256(49)
                 .bright()
-                .apply_to("✔ ".to_string()),
+                .apply_to(format!("{} ", CHECK_MARK)),
             success_suffix: console::Style::new()
                 .bold()
                 .white()
@@ -881,7 +974,7 @@ impl Cli {
                 .bold()
                 .color256(9)
                 .bright()
-                .apply_to("✘ ".to_string()),
+                .apply_to(format!("{} ", CROSS_MARK)),
             error_style: console::Style::new().color256(9).bold().bright(),
             active_item_prefix: console::Style::new()
                 .bold()
@@ -894,18 +987,5 @@ impl Cli {
             inactive_item_style: console::Style::new().white().dim(),
             ..Default::default()
         }
-    }
-
-    fn build_progressbar(&self, size: u64, prefix: String) -> ProgressBar {
-        let pb = ProgressBar::new(size);
-        pb.set_style(
-            ProgressStyle::with_template(
-                "{spinner:.green.bold} {prefix:.bold} [{bar:.magenta.bright.bold/white.dim}] {human_pos}/{human_len} ({percent}% | {eta} | {elapsed_precise})"
-            )
-            .unwrap()
-            .with_key("eta", |state: &ProgressState, w: &mut dyn std::fmt::Write | write!(w, "{:.2}s", state.eta().as_secs_f64()).unwrap())
-            .progress_chars("#>-"));
-        pb.set_prefix(prefix);
-        pb
     }
 }
